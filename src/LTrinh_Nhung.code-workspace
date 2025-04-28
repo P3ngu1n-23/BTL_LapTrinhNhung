@@ -1,0 +1,16 @@
+{
+	"folders": [
+		{
+			"path": "../../LTrinh_Nhung"
+		},
+		{
+			"name": "BTL_LTrinh_Nhung",
+			"path": "../../BTL_LTrinh_Nhung"
+		},
+		{
+			"name": "BTL_LTNhung",
+			"path": ".."
+		}
+	],
+	"settings": {}
+}

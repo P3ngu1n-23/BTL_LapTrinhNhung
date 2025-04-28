@@ -1,0 +1,16 @@
+{
+	"folders": [
+		{
+			"path": "../../../S.A&D-Mr.TDQue/Project"
+		},
+		{
+			"name": "BTL_LTNhung",
+			"path": "."
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"cmath": "cpp"
+		}
+	}
+}

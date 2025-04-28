@@ -1,64 +1,163 @@
-#include <WiFi.h>                   // WiFi cho ESP32
-#include <HTTPClient.h>             // Nếu gửi dữ liệu qua HTTP
-#include <Wire.h>                   // I2C giao tiếp với cảm biến
-#include <Adafruit_TCS34725.h>      // Cảm biến màu TCS34725
-#include <BH1750.h>                 // Cảm biến ánh sáng BH1750
-#include <ArduinoJson.h>            // Xử lý JSON nếu gửi dữ liệu dạng JSON
+#include <WiFi.h>
+#include <Wire.h>
+#include <Adafruit_TCS34725.h>
+#include <BH1750.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include <HTTPClient.h>
+#include <time.h>
 
-// TCS34725 dùng Wire mặc định
+// Thông tin Wi-Fi
+const char* ssid = "Tang 4";         // Thay bằng tên Wi-Fi của bạn
+const char* password = "10101010"; // Thay bằng mật khẩu Wi-Fi của bạn
+
+// Khởi tạo cảm biến
 Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_614MS, TCS34725_GAIN_1X);
-
-// BH1750 dùng Wire1
 BH1750 lightMeter;
 
+// URL API server (thay bằng server của bạn)
+const char* serverName = "http://your-api-server.com/api/sensor";
 
-void setup() {
-  Serial.begin(115200);
+// Cài đặt NTP (lấy thời gian từ Internet)
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 7 * 3600, 60000);  // Múi giờ +7 (Việt Nam)
 
-  // I2C cho TCS34725 (chân mặc định 21, 22)
-  Wire.begin(21, 22);
+// Biến lưu trạng thái cảm biến
+bool sensorEnabled = false;
+unsigned long sensorOnTime = 0;  // Thời điểm bật cảm biến
+
+// Kết nối Wi-Fi
+void connectWiFi() {
+  Serial.print("Đang kết nối Wi-Fi: ");
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\n✅ Wi-Fi đã kết nối!");
+  Serial.print("🔗 Địa chỉ IP: ");
+  Serial.println(WiFi.localIP());
+}
+
+// Khởi động cảm biến
+void enableSensors() {
   if (tcs.begin()) {
-    Serial.println("TCS34725 found!");
+    Serial.println("✅ TCS34725 đã bật!");
   } else {
-    Serial.println("No TCS34725 found ... check connections");
-    while (1);
+    Serial.println("❌ Lỗi khởi động TCS34725!");
   }
 
-  // I2C riêng cho BH1750 (D26: SDA, D25: SCL)
-  Wire1.begin(26, 25);
-  if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire1)) {  // chỉ định Wire1
-    Serial.println("BH1750 started successfully on Wire1");
+  if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE, 0x23, &Wire1)) {
+    Serial.println("✅ BH1750 đã bật!");
   } else {
-    Serial.println("Error initializing BH1750 on Wire1");
-    while (1);
+    Serial.println("❌ Lỗi khởi động BH1750!");
+  }
+
+  sensorEnabled = true;
+  sensorOnTime = millis();  // Ghi lại thời gian bật
+}
+
+// Tắt cảm biến
+void disableSensors() {
+  sensorEnabled = false;
+  Serial.println("🔴 Cảm biến đã tắt!");
+}
+
+
+void sendSensorData() {
+  if (sensorEnabled && WiFi.status() == WL_CONNECTED) {
+    uint16_t r, g, b, c;
+    tcs.getRawData(&r, &g, &b, &c);
+    float lux = lightMeter.readLightLevel();
+
+    timeClient.update();
+    unsigned long epochTime = timeClient.getEpochTime();
+    struct tm *ptm = gmtime((time_t *)&epochTime);
+    char datetimeStr[25];
+    snprintf(datetimeStr, sizeof(datetimeStr), "%04d-%02d-%02d %02d:%02d:%02d", 
+             ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday,
+             ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
+
+    // Tạo JSON
+    String jsonData = "{";
+    jsonData += "\"r\":" + String(r) + ",";
+    jsonData += "\"g\":" + String(g) + ",";
+    jsonData += "\"b\":" + String(b) + ",";
+    jsonData += "\"c\":" + String(c) + ",";
+    jsonData += "\"lux\":" + String(lux, 2) + ",";
+    jsonData += "\"datetime\":\"" + String(datetimeStr) + "\"";
+    jsonData += "}";
+
+    Serial.println("🔵 Dữ liệu gửi:");
+    Serial.println(jsonData);
+
+    HTTPClient http;
+    http.begin(serverName);
+    http.addHeader("Content-Type", "application/json");
+
+    int httpResponseCode = http.POST(jsonData);
+
+    if (httpResponseCode > 0) {
+      Serial.printf("✅ Server phản hồi: %d\n", httpResponseCode);
+      String response = http.getString();
+      Serial.println(response);
+    } else {
+      Serial.printf("❌ Lỗi gửi dữ liệu: %s\n", http.errorToString(httpResponseCode).c_str());
+    }
+
+    http.end();
   }
 }
 
-void loop() {
-  uint16_t r, g, b, c;
-  tcs.getRawData(&r, &g, &b, &c);
-  uint32_t colorTemp = tcs.calculateColorTemperature(r, g, b);
-  uint16_t luxColor = tcs.calculateLux(r, g, b);
+// Đọc dữ liệu cảm biến
+void readSensorData() {
+  if (sensorEnabled) {
+    uint16_t r, g, b, c;
+    tcs.getRawData(&r, &g, &b, &c);
+    float lux = lightMeter.readLightLevel();
 
-  float luxBH1750 = lightMeter.readLightLevel();
+    Serial.println("------ Dữ liệu cảm biến ------");
+    Serial.printf("🟢 TCS34725 - R: %d, G: %d, B: %d, C: %d\n", r, g, b, c);
+    Serial.printf("🟡 BH1750 - Lux: %.2f\n", lux);
+    Serial.println("------------------------------");
+  }
+}
 
-  Serial.println("------ Sensor Data ------");
-  Serial.print("TCS34725 RGB: ");
-  Serial.print("R: "); Serial.print(r);
-  Serial.print(" G: "); Serial.print(g);
-  Serial.print(" B: "); Serial.print(b);
-  Serial.print(" C: "); Serial.println(c);
+void setup() {
+  Serial.begin(115200);
+  connectWiFi();
 
-  Serial.print("TCS34725 Color Temp: ");
-  Serial.print(colorTemp); Serial.println(" K");
+  // Đồng bộ thời gian từ NTP
+  timeClient.begin();
+  timeClient.update();
 
-  Serial.print("TCS34725 Lux (color): ");
-  Serial.println(luxColor);
+  // Khởi động I2C
+  Wire.begin(21, 22);  // TCS34725 (mặc định chân 21: SDA, 22: SCL)
+  Wire1.begin(26, 25); // BH1750 (chân 26: SDA, 25: SCL)
 
-  Serial.print("BH1750 Lux: ");
-  Serial.println(luxBH1750);
+  Serial.println("🛠️ Hệ thống đã khởi động!");
+}
 
-  Serial.println("-------------------------\n");
+void loop() {  
+  timeClient.update();  // Cập nhật thời gian
 
-  delay(1000);
+  // Lấy thời gian thực
+  int currentHour = timeClient.getHours();
+  int currentMinute = timeClient.getMinutes();
+
+  // Kiểm tra xem có đến thời điểm bật cảm biến không (mỗi 30 phút)
+  if (!sensorEnabled && (currentMinute == 0 || currentMinute == 30)) {
+    enableSensors();
+    Serial.printf("🕒 Bật cảm biến lúc %02d:%02d\n", currentHour, currentMinute);
+  }
+
+  // Tắt cảm biến sau 1 phút
+  if (sensorEnabled && millis() - sensorOnTime >= 60 * 1000) {
+    disableSensors();
+  }
+
+  // Đọc dữ liệu nếu cảm biến đang bật
+  readSensorData();
+
+  delay(10000);  // Đọc mỗi 10 giây
 }
